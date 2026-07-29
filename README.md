@@ -32,7 +32,7 @@ Cada evento tiene un organizador responsable, una fecha, una ubicación, un cupo
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/USUARIO/devconf-api.git
+git clone https://github.com/iTzTomitox/devconf-api.git
 
 # Entrar al proyecto
 cd devconf-api
