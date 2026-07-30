@@ -1,8 +1,18 @@
+import { eventsRepository } from '../repositories/events.repository.js';
+
+
 class EventsService {
+  constructor(repository) {
+    this.repository = repository;
+  }
+
   async getEvents() {
-    return [];
+    return this.repository.findAll();
+  }
+
+  async getEventById(id) {
+    return this.repository.findById(id);
   }
 }
 
-// Exportamos una instancia lista para usar (patron singleton)
-export const eventsService = new EventsService();
+export const eventsService = new EventsService(eventsRepository);
