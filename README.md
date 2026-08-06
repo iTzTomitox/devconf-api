@@ -4,7 +4,7 @@ API REST para una plataforma de **conferencias tech e inscripciones**, desarroll
 
 La plataforma permite publicar conferencias, charlas y meetups, y gestionar las inscripciones de los asistentes con control de cupos, roles y notificaciones.
 
-> **Estado actual: Pre-entrega 1** — estructura base de la API organizada por capas. La lógica de autenticación, eventos e inscripciones se incorpora en las siguientes entregas.
+> **Estado actual: Pre-entrega 2** — registro seguro de usuarios con hash de contraseñas mediante bcrypt.
 
 ---
 
@@ -25,10 +25,21 @@ Cada evento tiene un organizador responsable, una fecha, una ubicación, un cupo
 | Mongoose | ODM para MongoDB |
 | dotenv | Gestión de variables de entorno |
 | ES Modules | Sistema de módulos (`import` / `export`) |
+| bcrypt | Hash de contraseñas |
+
+---
+
+## Requisitos previos
+
+- Node.js 18 o superior
+- Una instancia de MongoDB (Atlas o local)
+
+> La API requiere una conexión activa a MongoDB. Si `MONGO_URL` no está configurada o la conexión falla, el servidor no inicia y muestra el error en consola. Esto es intencional: evita que la API quede respondiendo peticiones sin base de datos.
 
 ---
 
 ## Instalación
+
 
 ```bash
 # Clonar el repositorio
@@ -55,7 +66,7 @@ cp .env.example .env
 |---|---|---|
 | `PORT` | Puerto donde escucha el servidor | `8080` |
 | `NODE_ENV` | Entorno de ejecución | `development` |
-| | `MONGO_URL` | Cadena de conexión a MongoDB Atlas | `mongodb+srv://usuario:password@cluster0.xxxxx.mongodb.net/devconf` |
+| `MONGO_URL` | Cadena de conexión a MongoDB Atlas | `mongodb+srv://usuario:password@cluster0.xxxxx.mongodb.net/devconf` |
 | `JWT_SECRET` | Clave para firmar los JWT | *(se usa desde la Pre-entrega 3)* |
 
 > El archivo `.env` está excluido del repositorio mediante `.gitignore`. Nunca debe subirse.
@@ -95,17 +106,22 @@ devconf-api/
 │   │   ├── events.controller.js
 │   │   └── sessions.controller.js
 │   ├── services/              # Lógica de negocio
-│   │   └── events.service.js
+│   │   ├── events.service.js
+│   │   └── sessions.service.js
 │   ├── repositories/          # Capa intermedia orientada al dominio
-│   │   └── events.repository.js
+│   │   ├── events.repository.js
+│   │   └── users.repository.js
 │   ├── dao/                   # Único acceso directo a Mongoose
-│   │   └── events.dao.js
+│   │   ├── events.dao.js
+│   │   └── users.dao.js
 │   ├── models/                # Schemas de Mongoose
 │   │   ├── user.model.js
 │   │   └── event.model.js
 │   ├── middlewares/           # Middlewares de Express
 │   │   └── error.middleware.js
 │   └── utils/                 # Funciones auxiliares reutilizables
+│       ├── errors.js          # Errores con código HTTP asociado
+│       └── hash.js            # bcrypt: crear y comparar hashes
 ├── .env.example
 ├── .gitignore
 ├── package.json
@@ -159,14 +175,66 @@ Regla principal: cada capa solo conoce a la que tiene inmediatamente debajo. Un 
 
 ### Sesiones
 
-Estructura declarada, sin lógica de autenticación en esta entrega. Todas responden `501 Not Implemented`.
+#### `POST /api/sessions/register`
 
-| Método | Ruta | Se implementa en |
+Registra un usuario nuevo. La contraseña se almacena hasheada con bcrypt y nunca se devuelve en la respuesta.
+
+**Campos esperados** (todos obligatorios)
+
+| Campo | Tipo | Validación |
 |---|---|---|
-| `POST` | `/api/sessions/register` | Pre-entrega 2 |
-| `POST` | `/api/sessions/login` | Pre-entrega 3 |
-| `GET` | `/api/sessions/current` | Pre-entrega 3 |
-| `POST` | `/api/sessions/logout` | Pre-entrega 3 |
+| `first_name` | string | No puede estar vacío |
+| `last_name` | string | No puede estar vacío |
+| `email` | string | Formato válido. Se normaliza a minúsculas y sin espacios |
+| `password` | string | Mínimo 8 caracteres |
+
+> El campo `role` **no se acepta desde el body**. Todo usuario registrado por esta vía se crea con rol `user`.
+
+**Request**
+
+```json
+{
+  "first_name": "Ana",
+  "last_name": "Pérez",
+  "email": "Ana@Mail.com",
+  "password": "Secreta123"
+}
+```
+
+**Respuesta `201 Created`**
+
+```json
+{
+  "status": "success",
+  "payload": {
+    "id": "6a748ecd42da2389ff97a63d",
+    "first_name": "Ana",
+    "last_name": "Pérez",
+    "email": "ana@mail.com",
+    "role": "user"
+  }
+}
+```
+
+**Respuestas de error**
+
+| Código | Situación | Mensaje |
+|---|---|---|
+| `400` | Faltan campos obligatorios | `Faltan campos obligatorios` |
+| `400` | Email mal formado | `El formato del email no es válido` |
+| `400` | Contraseña muy corta | `La contraseña debe tener al menos 8 caracteres` |
+| `409` | Email ya registrado | `El email ya está registrado` |
+
+
+#### Pendientes
+
+Se implementan en la Pre-entrega 3. Responden `501 Not Implemented`.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `POST` | `/api/sessions/login` | Autenticación con JWT y cookie |
+| `GET` | `/api/sessions/current` | Usuario autenticado actual |
+| `POST` | `/api/sessions/logout` | Cierre de sesión |
 
 ### Manejo de errores
 
@@ -177,6 +245,18 @@ Un middleware centralizado unifica el formato de todas las respuestas de error.
 ```json
 { "status": "error", "message": "Ruta no encontrada: GET /api/cualquier-cosa" }
 ```
+
+**Códigos utilizados**
+
+| Código | Significado |
+|---|---|
+| `200` | Petición exitosa |
+| `201` | Recurso creado |
+| `400` | Datos inválidos o incompletos |
+| `404` | Recurso o ruta inexistente |
+| `409` | Conflicto con el estado actual (ej. email duplicado) |
+| `500` | Error interno del servidor |
+| `501` | Funcionalidad aún no implementada |
 
 ---
 
