@@ -4,7 +4,7 @@ API REST para una plataforma de **conferencias tech e inscripciones**, desarroll
 
 La plataforma permite publicar conferencias, charlas y meetups, y gestionar las inscripciones de los asistentes con control de cupos, roles y notificaciones.
 
-> **Estado actual: Pre-entrega 2** — registro seguro de usuarios con hash de contraseñas mediante bcrypt.
+> **Estado actual: Pre-entrega 3** — autenticación completa con JWT almacenado en cookie HTTP Only.
 
 ---
 
@@ -26,6 +26,8 @@ Cada evento tiene un organizador responsable, una fecha, una ubicación, un cupo
 | dotenv | Gestión de variables de entorno |
 | ES Modules | Sistema de módulos (`import` / `export`) |
 | bcrypt | Hash de contraseñas |
+| jsonwebtoken | Generación y verificación de JWT |
+| cookie-parser | Lectura de cookies en las peticiones |
 
 ---
 
@@ -68,6 +70,7 @@ cp .env.example .env
 | `NODE_ENV` | Entorno de ejecución | `development` |
 | `MONGO_URL` | Cadena de conexión a MongoDB Atlas | `mongodb+srv://usuario:password@cluster0.xxxxx.mongodb.net/devconf` |
 | `JWT_SECRET` | Clave para firmar los JWT | *(se usa desde la Pre-entrega 3)* |
+| `JWT_EXPIRES_IN` | Tiempo de vida del token | `1h` |
 
 > El archivo `.env` está excluido del repositorio mediante `.gitignore`. Nunca debe subirse.
 
@@ -225,16 +228,107 @@ Registra un usuario nuevo. La contraseña se almacena hasheada con bcrypt y nunc
 | `400` | Contraseña muy corta | `La contraseña debe tener al menos 8 caracteres` |
 | `409` | Email ya registrado | `El email ya está registrado` |
 
+#### `POST /api/sessions/login`
 
-#### Pendientes
+Valida credenciales y devuelve una cookie de sesión con el JWT.
 
-Se implementan en la Pre-entrega 3. Responden `501 Not Implemented`.
+**Campos esperados**
 
-| Método | Ruta | Descripción |
+| Campo | Tipo |
+|---|---|
+| `email` | string |
+| `password` | string |
+
+**Request**
+
+```json
+{ "email": "ana@mail.com", "password": "Secreta123" }
+```
+
+**Respuesta `200 OK`**
+
+Además del cuerpo, la respuesta incluye la cabecera `Set-Cookie` con la cookie `currentUser` marcada como `HttpOnly`.
+
+```json
+{ "status": "success", "message": "Login correcto" }
+```
+
+> El token **no** se devuelve en el cuerpo. Viaja únicamente en la cookie, que es inaccesible desde JavaScript.
+
+**Respuestas de error**
+
+| Código | Situación | Mensaje |
 |---|---|---|
-| `POST` | `/api/sessions/login` | Autenticación con JWT y cookie |
-| `GET` | `/api/sessions/current` | Usuario autenticado actual |
-| `POST` | `/api/sessions/logout` | Cierre de sesión |
+| `400` | Falta `email` o `password` | `Faltan campos obligatorios` |
+| `401` | Email inexistente **o** contraseña incorrecta | `Credenciales inválidas` |
+
+> El mensaje es idéntico en ambos casos de forma deliberada: distinguirlos permitiría averiguar qué emails están registrados en el sistema.
+
+#### `GET /api/sessions/current`
+
+Devuelve los datos del usuario autenticado. **Requiere sesión activa.**
+
+No recibe parámetros: la identidad se obtiene del JWT que viaja en la cookie `currentUser`, enviada automáticamente por el cliente.
+
+**Respuesta `200 OK`**
+
+```json
+{
+  "status": "success",
+  "payload": {
+    "id": "6a748ecd42da2389ff97a63d",
+    "email": "ana@mail.com",
+    "role": "user"
+  }
+}
+```
+
+**Respuesta `401 Unauthorized`**
+
+Cuando no hay cookie, o el token está expirado o fue manipulado.
+
+```json
+{ "status": "error", "message": "No autenticado" }
+```
+
+#### `POST /api/sessions/logout`
+
+Elimina la cookie de sesión. No requiere cuerpo.
+
+**Respuesta `200 OK`**
+
+```json
+{ "status": "success", "message": "Sesión cerrada" }
+```
+
+---
+
+### Flujo de autenticación
+
+```
+POST /register  ->  crea el usuario con la password hasheada (bcrypt)
+       |
+POST /login     ->  verifica credenciales
+                    firma un JWT { id, email, role }
+                    lo guarda en la cookie currentUser (HttpOnly)
+       |
+GET /current    ->  authMiddleware lee la cookie
+                    verifica la firma del JWT
+                    deja el payload en req.user
+       |
+POST /logout    ->  borra la cookie -> /current vuelve a dar 401
+```
+
+**Decisiones de seguridad**
+
+| Decisión | Motivo |
+|---|---|
+| Cookie `httpOnly` | JavaScript no puede leer el token, ni siquiera ante un XSS |
+| Cookie `sameSite: 'lax'` | El navegador no la envía en peticiones desde otros sitios (CSRF) |
+| `secure` solo en producción | Obliga HTTPS en producción; en desarrollo permite `http://localhost` |
+| Mensaje de login genérico | Evita revelar qué emails están registrados |
+| Payload mínimo en el JWT | El contenido de un JWT es legible por cualquiera: solo va lo imprescindible |
+| Expiración de 1 hora | Como el servidor no guarda estado, no puede revocar tokens: la expiración limita el daño si uno se filtra |
 
 ### Manejo de errores
 
