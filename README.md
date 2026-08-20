@@ -4,7 +4,7 @@ API REST para una plataforma de **conferencias tech e inscripciones**, desarroll
 
 La plataforma permite publicar conferencias, charlas y meetups, y gestionar las inscripciones de los asistentes con control de cupos, roles y notificaciones.
 
-> **Estado actual: Pre-entrega 3** — autenticación completa con JWT almacenado en cookie HTTP Only.
+> **Estado actual: Pre-entrega 4** — autenticación centralizada mediante estrategias de Passport.js. El comportamiento externo de la API no cambió respecto de la entrega anterior.
 
 ---
 
@@ -28,6 +28,9 @@ Cada evento tiene un organizador responsable, una fecha, una ubicación, un cupo
 | bcrypt | Hash de contraseñas |
 | jsonwebtoken | Generación y verificación de JWT |
 | cookie-parser | Lectura de cookies en las peticiones |
+| Passport.js | Centralización de estrategias de autenticación |
+| passport-local | Estrategia de email y contraseña |
+| passport-jwt | Estrategia de verificación de JWT desde cookie |
 
 ---
 
@@ -98,7 +101,9 @@ devconf-api/
 │   ├── app.js                 # Configura Express (no levanta el servidor)
 │   ├── server.js              # Punto de entrada: levanta el servidor
 │   ├── config/                # Configuración y variables de entorno
-│   │   └── config.js
+│   │   ├── config.js
+│   │   ├── db.js
+│   │   └── passport.config.js # Estrategias de autenticación
 │   ├── routes/                # Definición de rutas
 │   │   ├── index.js           # Router principal
 │   │   ├── health.routes.js
@@ -121,11 +126,14 @@ devconf-api/
 │   │   ├── user.model.js
 │   │   └── event.model.js
 │   ├── middlewares/           # Middlewares de Express
+│   │   ├── auth.middleware.js  # Wrapper de passport.authenticate
 │   │   └── error.middleware.js
 │   └── utils/                 # Funciones auxiliares reutilizables
 │       ├── errors.js          # Errores con código HTTP asociado
-│       └── hash.js            # bcrypt: crear y comparar hashes
+│       ├── hash.js            # bcrypt: crear y comparar hashes
+│       └── jwt.js             # Firma y verificación de JWT
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── package.json
 └── README.md
@@ -147,6 +155,33 @@ routes → controllers → services → repositories → dao → models
 - **models** — definen la estructura de los documentos
 
 Regla principal: cada capa solo conoce a la que tiene inmediatamente debajo. Un controller nunca importa un modelo de Mongoose.
+
+### Estrategias de autenticación
+
+La autenticación está centralizada en `src/config/passport.config.js`. Cada estrategia es un punto de entrada que delega la lógica en el service.
+
+| Estrategia | Base | Qué hace |
+|---|---|---|
+| `register` | passport-local | Recibe los datos del formulario y delega en `sessionsService.register()` |
+| `login` | passport-local | Valida credenciales con `sessionsService.validateCredentials()`. **No genera el token** |
+| `current` | passport-jwt | Extrae el JWT de la cookie `currentUser` y verifica su firma |
+
+**Reparto de responsabilidades**
+
+```
+ruta        -> declara qué estrategia aplicar
+estrategia  -> punto de entrada: extrae credenciales y llama al service
+service     -> reglas de negocio: valida, hashea, consulta la base
+controller  -> transporte HTTP: firma el JWT, setea la cookie, arma la respuesta
+```
+
+El **controller**, no la estrategia, es quien genera el JWT y setea la cookie: firmar un token y elegir sus opciones de transporte son decisiones HTTP, no de negocio.
+
+**Preparado para proveedores externos**
+
+Para sumar un login con Google o GitHub alcanza con instalar la estrategia correspondiente, definirla en `passport.config.js` y registrarla en `initializePassport()`. **`app.js` no necesita modificarse**: solo invoca `initializePassport()` y `passport.initialize()`, sin conocer ningún nombre de estrategia.
+
+`src/middlewares/auth.middleware.js` expone un wrapper `authenticate()` que traduce los fallos de Passport al formato de error de la API, para que todas las respuestas mantengan la forma `{ status, message }`.
 
 ---
 
