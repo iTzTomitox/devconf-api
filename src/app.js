@@ -1,5 +1,6 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import passport, { initializePassport } from './config/passport.config.js';
 import apiRouter from './routes/index.js';
 import { notFoundHandler, errorHandler } from './middlewares/error.middleware.js';
 
@@ -7,9 +8,9 @@ const app = express();
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Lee las cookies de la peticion y las deja disponibles en req.cookies
 app.use(cookieParser());
+initializePassport();
+app.use(passport.initialize());
 
 app.use('/api', apiRouter);
 

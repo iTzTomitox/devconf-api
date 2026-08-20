@@ -1,37 +1,29 @@
-import { verifyToken } from '../utils/jwt.js';
-import { unauthorized } from '../utils/errors.js';
-
-const COOKIE_NAME = 'currentUser';
+import passport from '../config/passport.config.js';
+import { badRequest, unauthorized } from '../utils/errors.js';
 
 /**
- * Protege rutas que requieren sesion.
- *
- * Lee el JWT desde la cookie, lo verifica y deja el payload
- * en req.user para que el resto de la cadena sepa quien pide.
- *
- * Responde 401 si no hay cookie o el token es invalido/expirado.
+ * @param strategyName  nombre de la estrategia registrada
+ * @param buildError    funcion que arma el error cuando no hay usuario
  */
-export const authMiddleware = (req, res, next) => {
-  const token = req.cookies?.[COOKIE_NAME];
 
-  if (!token) {
-    return next(unauthorized('No autenticado'));
-  }
+export const authenticate =
+  (strategyName, buildError = () => unauthorized('No autenticado')) =>
+  (req, res, next) => {
+    passport.authenticate(strategyName, { session: false }, (error, user, info) => {
+      // El service lanzo un error de negocio: ya trae su statusCode
+      if (error) {
+        return next(error);
+      }
 
-  try {
-    // verifyToken lanza si la firma no coincide o el token vencio
-    const payload = verifyToken(token);
+      if (!user) {
+        // passport-local corta antes del callback si faltan credenciales
+        if (info?.message === 'Missing credentials') {
+          return next(badRequest('Faltan campos obligatorios'));
+        }
+        return next(buildError());
+      }
 
-    req.user = {
-      id: payload.id,
-      email: payload.email,
-      role: payload.role,
-    };
-
-    next();
-  } catch (error) {
-    // No distinguimos "expirado" de "manipulado":
-    // en ambos casos el resultado es el mismo, no hay sesion valida
-    next(unauthorized('No autenticado'));
-  }
-};
+      req.user = user;
+      return next();
+    })(req, res, next);
+  };
