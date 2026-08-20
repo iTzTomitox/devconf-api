@@ -1,11 +1,7 @@
-import { sessionsService } from '../services/sessions.service.js';
 import { config } from '../config/config.js';
+import { generateToken } from '../utils/jwt.js';
 
-/**
- * Configuracion de la cookie de sesion.
- * Se define una sola vez para que login y logout usen exactamente
- * las mismas opciones: si no coinciden, el navegador no borra la cookie.
- */
+
 const COOKIE_NAME = 'currentUser';
 
 const COOKIE_OPTIONS = {
@@ -15,34 +11,26 @@ const COOKIE_OPTIONS = {
   maxAge: 3600000,                             // 1 hora en milisegundos
 };
 
-export const register = async (req, res, next) => {
-  try {
-    const user = await sessionsService.register(req.body);
-
-    res.status(201).json({
-      status: 'success',
-      payload: user,
-    });
-  } catch (error) {
-    next(error);
-  }
+export const register = (req, res) => {
+  res.status(201).json({
+    status: 'success',
+    payload: req.user,
+  });
 };
 
+export const login = (req, res) => {
+  const token = generateToken({
+    id: req.user.id,
+    email: req.user.email,
+    role: req.user.role,
+  });
 
-export const login = async (req, res, next) => {
-  try {
-    const { token } = await sessionsService.login(req.body);
+  res.cookie(COOKIE_NAME, token, COOKIE_OPTIONS);
 
-    // El token viaja en la cookie, no en el cuerpo de la respuesta
-    res.cookie(COOKIE_NAME, token, COOKIE_OPTIONS);
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Login correcto',
-    });
-  } catch (error) {
-    next(error);
-  }
+  res.status(200).json({
+    status: 'success',
+    message: 'Login correcto',
+  });
 };
 
 export const current = (req, res) => {

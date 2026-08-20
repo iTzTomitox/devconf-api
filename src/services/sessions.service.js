@@ -1,6 +1,5 @@
 import { usersRepository } from '../repositories/users.repository.js';
 import { createHash, isValidPassword } from '../utils/hash.js';
-import { generateToken } from '../utils/jwt.js';
 import { badRequest, conflict, unauthorized } from '../utils/errors.js';
 
 const PASSWORD_MIN_LENGTH = 8;
@@ -46,15 +45,7 @@ class SessionsService {
     return this.#toPublicUser(createdUser);
   }
 
-    /**
-   * Valida credenciales y devuelve el token de sesion.
-   *
-   * IMPORTANTE: ante cualquier fallo se responde el MISMO mensaje
-   * generico. Si distinguieramos "el email no existe" de "la contrasena
-   * es incorrecta", le estariamos confirmando a un atacante que ese
-   * email tiene cuenta en el sistema.
-   */
-  async login({ email, password }) {
+  async validateCredentials({ email, password }) {
     if (!email || !password) {
       throw badRequest('Faltan campos obligatorios');
     }
@@ -72,15 +63,7 @@ class SessionsService {
       throw unauthorized('Credenciales inválidas');
     }
 
-    // El payload solo lleva lo minimo e indispensable.
-    // Recordar: cualquiera puede leerlo decodificando el token.
-    const token = generateToken({
-      id: user._id,
-      email: user.email,
-      role: user.role,
-    });
-
-    return { token, user: this.#toPublicUser(user) };
+    return this.#toPublicUser(user);
   }
 
   #validateRegisterData({ first_name, last_name, email, password }) {
