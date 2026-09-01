@@ -4,7 +4,7 @@ API REST para una plataforma de **conferencias tech e inscripciones**, desarroll
 
 La plataforma permite publicar conferencias, charlas y meetups, y gestionar las inscripciones de los asistentes con control de cupos, roles y notificaciones.
 
-> **Estado actual: Pre-entrega 4** — autenticación centralizada mediante estrategias de Passport.js. El comportamiento externo de la API no cambió respecto de la entrega anterior.
+> **Estado actual: Pre-entrega 5** — sistema de autorización por roles (RBAC) con middlewares reutilizables y validación de propiedad de recursos.
 
 ---
 
@@ -108,11 +108,13 @@ devconf-api/
 │   │   ├── index.js           # Router principal
 │   │   ├── health.routes.js
 │   │   ├── events.routes.js
-│   │   └── sessions.routes.js
+│   │   ├── sessions.routes.js
+│   │   └── users.routes.js
 │   ├── controllers/           # Coordinan request/response
 │   │   ├── health.controller.js
 │   │   ├── events.controller.js
-│   │   └── sessions.controller.js
+│   │   ├── sessions.controller.js
+│   │   └── users.controller.js
 │   ├── services/              # Lógica de negocio
 │   │   ├── events.service.js
 │   │   └── sessions.service.js
@@ -126,7 +128,8 @@ devconf-api/
 │   │   ├── user.model.js
 │   │   └── event.model.js
 │   ├── middlewares/           # Middlewares de Express
-│   │   ├── auth.middleware.js  # Wrapper de passport.authenticate
+│   │   ├── auth.middleware.js       # Autenticación: puebla req.user (401)
+│   │   ├── authorize.middleware.js  # Autorización por rol (403)
 │   │   └── error.middleware.js
 │   └── utils/                 # Funciones auxiliares reutilizables
 │       ├── errors.js          # Errores con código HTTP asociado
@@ -183,6 +186,57 @@ Para sumar un login con Google o GitHub alcanza con instalar la estrategia corre
 
 `src/middlewares/auth.middleware.js` expone un wrapper `authenticate()` que traduce los fallos de Passport al formato de error de la API, para que todas las respuestas mantengan la forma `{ status, message }`.
 
+### Roles y autorización
+
+El sistema distingue **autenticación** (¿quién sos?) de **autorización** (¿qué podés hacer?).
+
+| | Pregunta | Middleware | Falla con |
+|---|---|---|---|
+| Autenticación | ¿Hay una sesión válida? | `authenticate()` | `401 No autenticado` |
+| Autorización | ¿El rol tiene permiso? | `authorize()` | `403 No tenés permisos...` |
+
+> La distinción es deliberada. Un `401` indica que hace falta iniciar sesión; un `403` indica que la sesión es válida pero la cuenta no tiene el permiso necesario. Reintentar solo tiene sentido en el primer caso.
+
+#### Matriz de permisos
+
+| Acción | `user` | `organizer` | `admin` |
+|---|:--:|:--:|:--:|
+| Consultar eventos | ✅ | ✅ | ✅ |
+| Crear eventos | ❌ | ✅ | ✅ |
+| Modificar eventos **propios** | ❌ | ✅ | ✅ |
+| Modificar **cualquier** evento | ❌ | ❌ | ✅ |
+| Ver todos los usuarios | ❌ | ❌ | ✅ |
+
+#### Rutas protegidas
+
+| Método | Ruta | Requiere |
+|---|---|---|
+| `GET` | `/api/events` | — (pública) |
+| `GET` | `/api/events/:id` | — (pública) |
+| `POST` | `/api/events` | sesión + rol `organizer` o `admin` |
+| `PUT` | `/api/events/:id` | sesión + rol `organizer` o `admin` + **ser dueño del evento** (o `admin`) |
+| `GET` | `/api/sessions/current` | sesión |
+| `GET` | `/api/users` | sesión + rol `admin` |
+
+#### Dos niveles de control
+
+**Por rol** — se resuelve en el middleware `authorize()`, que compara `req.user.role` contra la lista de roles permitidos. No necesita consultar la base.
+
+**Por propiedad del recurso** — vive en el **service**, no en un middleware. Para saber si un evento te pertenece hay que buscarlo primero en la base y comparar su campo `organizer` con el id del usuario autenticado. Eso es una regla de negocio.
+
+```js
+// events.service.js - updateEvent()
+const isOwner = String(event.organizer) === String(requester.id);
+const isAdmin = requester.role === 'admin';
+if (!isOwner && !isAdmin) throw forbidden('...');
+```
+
+Un `PUT /api/events/:id` atraviesa tres controles: sesión (`401`), rol (`403`) y propiedad (`403` o `404` si el evento no existe).
+
+#### Asignación de roles
+
+El registro público **siempre** crea usuarios con rol `user`: el campo `role` se ignora si viene en el body. Los roles `organizer` y `admin` se asignan manualmente en la base de datos.
+
 ---
 
 ## Rutas disponibles
@@ -201,15 +255,104 @@ Para sumar un login con Google o GitHub alcanza con instalar la estrategia corre
 
 ### Eventos
 
-| Método | Ruta | Descripción |
+| Método | Ruta | Acceso |
 |---|---|---|
-| `GET` | `/api/events` | Lista los eventos almacenados en la base |
+| `GET` | `/api/events` | Público |
+| `GET` | `/api/events/:id` | Público |
+| `POST` | `/api/events` | `organizer` o `admin` |
+| `PUT` | `/api/events/:id` | Dueño del evento o `admin` |
 
-**Respuesta `200`** (array vacío mientras no haya eventos cargados)
+#### `POST /api/events`
+
+**Campos**
+
+| Campo | Obligatorio |
+|---|:--:|
+| `title` | ✅ |
+| `description` | ✅ |
+| `category` | ✅ |
+| `date` | ✅ |
+| `location` | ✅ |
+| `capacity` | ❌ |
+| `price` | ❌ |
+
+> El campo `organizer` **no se acepta desde el body**: se asigna automáticamente desde el usuario autenticado.
+
+**Request**
 
 ```json
-{ "status": "success", "payload": [] }
+{
+  "title": "Congreso Backend 2026",
+  "description": "Charlas sobre arquitectura y APIs",
+  "category": "backend",
+  "date": "2026-12-01",
+  "location": "Buenos Aires",
+  "capacity": 100,
+  "price": 0
+}
 ```
+
+**Respuesta `201 Created`**
+
+```json
+{
+  "status": "success",
+  "payload": {
+    "_id": "6a96cf009a0743818d17094d",
+    "title": "Congreso Backend 2026",
+    "category": "backend",
+    "status": "draft",
+    "organizer": "6a96cd276006139b0547efa8"
+  }
+}
+```
+
+**Errores**
+
+| Código | Situación |
+|---|---|
+| `400` | Faltan campos obligatorios |
+| `401` | Sin sesión |
+| `403` | Rol `user` |
+
+#### `PUT /api/events/:id`
+
+Actualiza un evento. Solo el organizador dueño o un `admin`.
+
+**Errores**
+
+| Código | Situación | Mensaje |
+|---|---|---|
+| `401` | Sin sesión | `No autenticado` |
+| `403` | Rol sin permiso | `No tenés permisos para realizar esta acción` |
+| `403` | Evento de otro organizador | `No podés modificar un evento que no te pertenece` |
+| `404` | El evento no existe | `Evento no encontrado` |
+
+> El campo `organizer` se descarta si viene en el body: un evento no puede transferirse a otro usuario.
+
+### Usuarios
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| `GET` | `/api/users` | Solo `admin` |
+
+**Respuesta `200 OK`** — ningún usuario incluye el campo `password`.
+
+```json
+{
+  "status": "success",
+  "payload": [
+    { "id": "...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com", "role": "user" }
+  ]
+}
+```
+
+**Errores**
+
+| Código | Situación |
+|---|---|
+| `401` | Sin sesión |
+| `403` | Rol distinto de `admin` |
 
 ### Sesiones
 
@@ -382,6 +525,7 @@ Un middleware centralizado unifica el formato de todas las respuestas de error.
 | `200` | Petición exitosa |
 | `201` | Recurso creado |
 | `400` | Datos inválidos o incompletos |
+| `403` | Autenticado, pero sin permisos para esta acción |
 | `404` | Recurso o ruta inexistente |
 | `409` | Conflicto con el estado actual (ej. email duplicado) |
 | `500` | Error interno del servidor |
