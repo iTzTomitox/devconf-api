@@ -21,6 +21,10 @@ class UsersRepository {
     const count = await this.dao.count({ email });
     return count > 0;
   }
+
+  async findAll() {
+    return this.dao.findAll();
+  }
 }
 
 export const usersRepository = new UsersRepository(usersDAO);

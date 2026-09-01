@@ -66,6 +66,11 @@ class SessionsService {
     return this.#toPublicUser(user);
   }
 
+    async getAllUsers() {
+    const users = await this.repository.findAll();
+    return users.map((user) => this.#toPublicUser(user));
+  }
+
   #validateRegisterData({ first_name, last_name, email, password }) {
     if (!first_name || !last_name || !email || !password) {
       throw badRequest('Faltan campos obligatorios');
