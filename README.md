@@ -261,6 +261,51 @@ El registro público **siempre** crea usuarios con rol `user`: el campo `role` s
 | `GET` | `/api/events/:id` | Público |
 | `POST` | `/api/events` | `organizer` o `admin` |
 | `PUT` | `/api/events/:id` | Dueño del evento o `admin` |
+| `PATCH` | `/api/events/:id/status` | Dueño del evento o `admin` |
+
+#### `GET /api/events`
+
+Listado público con filtros, paginación y ordenamiento.
+
+**Query params**
+
+| Parámetro | Tipo | Default | Descripción |
+|---|---|---|---|
+| `status` | string | — | Filtra por estado exacto |
+| `category` | string | — | Filtra por categoría (insensible a mayúsculas) |
+| `location` | string | — | Coincidencia parcial, insensible a mayúsculas |
+| `dateFrom` | fecha | — | Eventos desde esta fecha inclusive |
+| `dateTo` | fecha | — | Eventos hasta esta fecha inclusive |
+| `page` | número | `1` | Página solicitada |
+| `limit` | número | `10` | Resultados por página (máximo `50`) |
+| `sort` | string | `date` | `date`, `price`, `title`, `createdAt`. Prefijo `-` para descendente |
+
+**Ejemplo**
+
+```
+GET /api/events?status=published&location=buenos&page=1&limit=5&sort=-date
+```
+
+**Respuesta `200`**
+
+```json
+{
+  "status": "success",
+  "data": [],
+  "page": 1,
+  "limit": 5,
+  "total": 12,
+  "totalPages": 3
+}
+```
+
+**Errores**
+
+| Código | Situación | Mensaje |
+|---|---|---|
+| `400` | `status` no válido | `Estado inválido. Valores permitidos: ...` |
+| `400` | `sort` sobre un campo no permitido | `No se puede ordenar por "X". Campos válidos: ...` |
+| `400` | `dateFrom` o `dateTo` mal formadas | `dateFrom no es una fecha válida` |
 
 #### `POST /api/events`
 
@@ -273,10 +318,12 @@ El registro público **siempre** crea usuarios con rol `user`: el campo `role` s
 | `category` | ✅ |
 | `date` | ✅ |
 | `location` | ✅ |
-| `capacity` | ❌ |
+| `capacity` | ✅ |
 | `price` | ❌ |
 
 > El campo `organizer` **no se acepta desde el body**: se asigna automáticamente desde el usuario autenticado.
+
+> Las reglas de negocio se validan en el service: la fecha debe ser futura, `capacity` un entero mayor a 0, y `price` no puede ser negativo. Todo evento nace con `status: "draft"` y la `category` se normaliza a minúsculas.
 
 **Request**
 
@@ -309,11 +356,14 @@ El registro público **siempre** crea usuarios con rol `user`: el campo `role` s
 
 **Errores**
 
-| Código | Situación |
-|---|---|
-| `400` | Faltan campos obligatorios |
-| `401` | Sin sesión |
-| `403` | Rol `user` |
+| Código | Situación | Mensaje |
+|---|---|---|
+| `400` | Faltan campos obligatorios | `Faltan campos obligatorios` |
+| `400` | Fecha pasada o inválida | `La fecha del evento debe ser futura` |
+| `400` | Capacidad no válida | `La capacidad debe ser un número entero mayor a 0` |
+| `400` | Precio negativo | `El precio no puede ser negativo` |
+| `401` | Sin sesión | `No autenticado` |
+| `403` | Rol `user` | `No tenés permisos para realizar esta acción` |
 
 #### `PUT /api/events/:id`
 
@@ -327,8 +377,58 @@ Actualiza un evento. Solo el organizador dueño o un `admin`.
 | `403` | Rol sin permiso | `No tenés permisos para realizar esta acción` |
 | `403` | Evento de otro organizador | `No podés modificar un evento que no te pertenece` |
 | `404` | El evento no existe | `Evento no encontrado` |
+| `409` | Evento `cancelled` o `finished` | `No se puede modificar un evento con estado "X"` |
 
 > El campo `organizer` se descarta si viene en el body: un evento no puede transferirse a otro usuario.
+
+> El campo `status` también se descarta del body: los cambios de estado van por `PATCH /api/events/:id/status`.
+
+#### `PATCH /api/events/:id/status`
+
+Cambia el estado de un evento. Se usa `PATCH` y no `PUT` porque modifica un único campo, no el recurso completo.
+
+**Request**
+
+```json
+{ "status": "published" }
+```
+
+**Máquina de estados**
+
+| Estado actual | Transiciones permitidas |
+|---|---|
+| `draft` | `published`, `cancelled` |
+| `published` | `cancelled`, `finished` |
+| `cancelled` | — (terminal) |
+| `finished` | — (terminal) |
+
+Un evento nace en `draft`. Una vez en `cancelled` o `finished` no admite más cambios de estado ni ediciones por `PUT`.
+
+**Respuesta `200`**
+
+```json
+{
+  "status": "success",
+  "payload": {
+    "_id": "6a9a2a0d91ede52ca64f8217",
+    "title": "DevConf Buenos Aires 2027",
+    "status": "published"
+  }
+}
+```
+
+**Errores**
+
+| Código | Situación | Mensaje |
+|---|---|---|
+| `400` | Falta el campo `status` | `El estado es obligatorio` |
+| `400` | Estado inexistente | `Estado inválido. Valores permitidos: ...` |
+| `401` | Sin sesión | `No autenticado` |
+| `403` | Rol sin permiso | `No tenés permisos para realizar esta acción` |
+| `403` | Evento de otro organizador | `No podés modificar un evento que no te pertenece` |
+| `404` | El evento no existe | `Evento no encontrado` |
+| `409` | Ya está en ese estado | `El evento ya se encuentra en estado "X"` |
+| `409` | Transición no permitida | `No se puede pasar de "X" a "Y"` |
 
 ### Usuarios
 
@@ -522,7 +622,7 @@ Un middleware centralizado unifica el formato de todas las respuestas de error.
 
 | Código | Significado |
 |---|---|
-| `200` | Petición exitosa |
+| `200` | Petición exitosa |  
 | `201` | Recurso creado |
 | `400` | Datos inválidos o incompletos |
 | `403` | Autenticado, pero sin permisos para esta acción |
