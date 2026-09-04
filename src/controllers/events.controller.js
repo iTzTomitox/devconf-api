@@ -8,11 +8,10 @@ import { eventsService } from '../services/events.service.js';
 
 export const getEvents = async (req, res, next) => {
   try {
-    const events = await eventsService.getEvents();
-
+    const result = await eventsService.getEvents(req.query);
     res.status(200).json({
       status: 'success',
-      payload: events,
+      ...result,
     });
   } catch (error) {
     next(error);
@@ -57,6 +56,23 @@ export const createEvent = async (req, res, next) => {
 export const updateEvent = async (req, res, next) => {
   try {
     const event = await eventsService.updateEvent(req.params.id, req.body, req.user);
+
+    res.status(200).json({
+      status: 'success',
+      payload: event,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const changeStatus = async (req, res, next) => {
+  try {
+    const event = await eventsService.changeStatus(
+      req.params.id,
+      req.body.status,
+      req.user
+    );
 
     res.status(200).json({
       status: 'success',
