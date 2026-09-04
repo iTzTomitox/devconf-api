@@ -21,11 +21,20 @@ class EventsDAO {
   }
 
   async update(id, data) {
-    return Event.findByIdAndUpdate(id, data, { new: true }).lean();
+    return Event.findByIdAndUpdate(id, data, { returnDocument: 'after' }).lean();
   }
 
   async count(filter = {}) {
     return Event.countDocuments(filter);
+  }
+
+  async paginate(filter = {}, { skip = 0, limit = 10, sort = {} } = {}) {
+    const [documents, total] = await Promise.all([
+      Event.find(filter).sort(sort).skip(skip).limit(limit).lean(),
+      Event.countDocuments(filter),
+    ]);
+
+    return { documents, total };
   }
 }
 

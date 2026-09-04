@@ -28,6 +28,10 @@ class EventsRepository {
   async countByStatus(status) {
     return this.dao.count({ status });
   }
+
+    async paginate(filter, options) {
+    return this.dao.paginate(filter, options);
+  }
 }
 
 export const eventsRepository = new EventsRepository(eventsDAO);
