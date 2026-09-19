@@ -4,7 +4,7 @@ API REST para una plataforma de **conferencias tech e inscripciones**, desarroll
 
 La plataforma permite publicar conferencias, charlas y meetups, y gestionar las inscripciones de los asistentes con control de cupos, roles y notificaciones.
 
-> **Estado actual: Pre-entrega 5** — sistema de autorización por roles (RBAC) con middlewares reutilizables y validación de propiedad de recursos.
+> **Estado actual: Pre-entrega 6** — entidad `Event` con validaciones de negocio, máquina de estados, filtros, paginación y ordenamiento.
 
 ---
 
@@ -92,6 +92,23 @@ npm start
 El servidor queda disponible en `http://localhost:8080`.
 
 ---
+
+## Tests
+
+El proyecto usa el corredor de tests nativo de Node (`node:test`), sin dependencias externas.
+
+```bash
+npm test
+```
+
+Los tests cubren las reglas de negocio del `EventsService` sin tocar la base de datos: se le inyecta un repository falso por el constructor, de modo que el service se ejecuta aislado.
+
+| Grupo | Qué valida |
+|---|---|
+| `createEvent` | Fecha futura obligatoria, normalización de `category` |
+| `changeStatus` | Transiciones permitidas, estados inválidos, evento inexistente |
+| `updateEvent` | Propiedad del recurso, bypass de `admin`, descarte de `organizer` y `status`, inmutabilidad de eventos cancelados |
+| `getEvents` | Tope de `limit`, cálculo de `skip`, lista blanca de `sort` |
 
 ## Estructura de carpetas
 
