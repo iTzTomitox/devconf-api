@@ -4,7 +4,7 @@ API REST para una plataforma de **conferencias tech e inscripciones**, desarroll
 
 La plataforma permite publicar conferencias, charlas y meetups, y gestionar las inscripciones de los asistentes con control de cupos, roles y notificaciones.
 
-> **Estado actual: Pre-entrega 6** — entidad `Event` con validaciones de negocio, máquina de estados, filtros, paginación y ordenamiento.
+> **Estado actual: Pre-entrega 7** — inscripciones (`Ticket`) con control de cupos, cancelación que libera lugares y confirmación por email.
 
 ---
 
@@ -31,6 +31,9 @@ Cada evento tiene un organizador responsable, una fecha, una ubicación, un cupo
 | Passport.js | Centralización de estrategias de autenticación |
 | passport-local | Estrategia de email y contraseña |
 | passport-jwt | Estrategia de verificación de JWT desde cookie |
+| Nodemailer | Envío de correos transaccionales (SMTP) |
+| Mailtrap | Servidor SMTP de prueba para desarrollo |
+| node:test | Corredor de tests nativo de Node |
 
 ---
 
@@ -74,6 +77,11 @@ cp .env.example .env
 | `MONGO_URL` | Cadena de conexión a MongoDB Atlas | `mongodb+srv://usuario:password@cluster0.xxxxx.mongodb.net/devconf` |
 | `JWT_SECRET` | Clave para firmar los JWT | *(se usa desde la Pre-entrega 3)* |
 | `JWT_EXPIRES_IN` | Tiempo de vida del token | `1h` |
+| `MAIL_HOST` | Host SMTP | `sandbox.smtp.mailtrap.io` |
+| `MAIL_PORT` | Puerto SMTP | `2525` |
+| `MAIL_USER` | Usuario SMTP | *(lo provee Mailtrap)* |
+| `MAIL_PASS` | Contraseña SMTP | *(lo provee Mailtrap)* |
+| `MAIL_FROM` | Remitente de los correos | `DevConf <no-reply@devconf.test>` |
 
 > El archivo `.env` está excluido del repositorio mediante `.gitignore`. Nunca debe subirse.
 
@@ -101,7 +109,7 @@ El proyecto usa el corredor de tests nativo de Node (`node:test`), sin dependenc
 npm test
 ```
 
-Los tests cubren las reglas de negocio del `EventsService` sin tocar la base de datos: se le inyecta un repository falso por el constructor, de modo que el service se ejecuta aislado.
+Los tests cubren las reglas de negocio de los services sin tocar la base de datos ni el servidor SMTP: se les inyectan repositories y un mailer falsos por el constructor, de modo que cada service se ejecuta aislado. Esa es la ventaja concreta de la inyección de dependencias.
 
 | Grupo | Qué valida |
 |---|---|
@@ -109,6 +117,9 @@ Los tests cubren las reglas de negocio del `EventsService` sin tocar la base de 
 | `changeStatus` | Transiciones permitidas, estados inválidos, evento inexistente |
 | `updateEvent` | Propiedad del recurso, bypass de `admin`, descarte de `organizer` y `status`, inmutabilidad de eventos cancelados |
 | `getEvents` | Tope de `limit`, cálculo de `skip`, lista blanca de `sort` |
+| `createTicket` | Evento no publicado, inscripción duplicada, cupo insuficiente, precio congelado y envío de mail |
+| `cancelTicket` | Cambio de estado con fecha, propiedad del ticket, doble cancelación |
+| `getEventTickets` | Solo el organizador dueño o un `admin` |
 
 ## Estructura de carpetas
 
@@ -120,30 +131,38 @@ devconf-api/
 │   ├── config/                # Configuración y variables de entorno
 │   │   ├── config.js
 │   │   ├── db.js
+│   │   ├── mailer.js          # Transporte SMTP (Nodemailer)
 │   │   └── passport.config.js # Estrategias de autenticación
 │   ├── routes/                # Definición de rutas
 │   │   ├── index.js           # Router principal
 │   │   ├── health.routes.js
 │   │   ├── events.routes.js
 │   │   ├── sessions.routes.js
+│   │   ├── tickets.routes.js
 │   │   └── users.routes.js
 │   ├── controllers/           # Coordinan request/response
 │   │   ├── health.controller.js
 │   │   ├── events.controller.js
 │   │   ├── sessions.controller.js
+│   │   ├── tickets.controller.js
 │   │   └── users.controller.js
 │   ├── services/              # Lógica de negocio
 │   │   ├── events.service.js
-│   │   └── sessions.service.js
+│   │   ├── mail.service.js    # Correos transaccionales (best effort)
+│   │   ├── sessions.service.js
+│   │   └── tickets.service.js
 │   ├── repositories/          # Capa intermedia orientada al dominio
 │   │   ├── events.repository.js
+│   │   ├── tickets.repository.js
 │   │   └── users.repository.js
 │   ├── dao/                   # Único acceso directo a Mongoose
 │   │   ├── events.dao.js
+│   │   ├── tickets.dao.js
 │   │   └── users.dao.js
 │   ├── models/                # Schemas de Mongoose
 │   │   ├── user.model.js
-│   │   └── event.model.js
+│   │   ├── event.model.js
+│   │   └── ticket.model.js
 │   ├── middlewares/           # Middlewares de Express
 │   │   ├── auth.middleware.js       # Autenticación: puebla req.user (401)
 │   │   ├── authorize.middleware.js  # Autorización por rol (403)
@@ -152,6 +171,9 @@ devconf-api/
 │       ├── errors.js          # Errores con código HTTP asociado
 │       ├── hash.js            # bcrypt: crear y comparar hashes
 │       └── jwt.js             # Firma y verificación de JWT
+├── test/                      # Tests de reglas de negocio (node:test)
+│   ├── events.service.test.js
+│   └── tickets.service.test.js
 ├── .env.example
 ├── .gitattributes
 ├── .gitignore
@@ -222,6 +244,13 @@ El sistema distingue **autenticación** (¿quién sos?) de **autorización** (¿
 | Crear eventos | ❌ | ✅ | ✅ |
 | Modificar eventos **propios** | ❌ | ✅ | ✅ |
 | Modificar **cualquier** evento | ❌ | ❌ | ✅ |
+| Cambiar el estado de eventos **propios** | ❌ | ✅ | ✅ |
+| Inscribirse a un evento | ✅ | ✅ | ✅ |
+| Ver **sus propias** inscripciones | ✅ | ✅ | ✅ |
+| Cancelar **sus propias** inscripciones | ✅ | ✅ | ✅ |
+| Cancelar **cualquier** inscripción | ❌ | ❌ | ✅ |
+| Ver inscriptos de eventos **propios** | ❌ | ✅ | ✅ |
+| Ver inscriptos de **cualquier** evento | ❌ | ❌ | ✅ |
 | Ver todos los usuarios | ❌ | ❌ | ✅ |
 
 #### Rutas protegidas
@@ -232,6 +261,11 @@ El sistema distingue **autenticación** (¿quién sos?) de **autorización** (¿
 | `GET` | `/api/events/:id` | — (pública) |
 | `POST` | `/api/events` | sesión + rol `organizer` o `admin` |
 | `PUT` | `/api/events/:id` | sesión + rol `organizer` o `admin` + **ser dueño del evento** (o `admin`) |
+| `PATCH` | `/api/events/:id/status` | sesión + rol `organizer` o `admin` + **ser dueño del evento** (o `admin`) |
+| `POST` | `/api/events/:eid/tickets` | sesión |
+| `GET` | `/api/events/:eid/tickets` | sesión + **ser dueño del evento** (o `admin`) |
+| `GET` | `/api/tickets/my-tickets` | sesión |
+| `PATCH` | `/api/tickets/:tid/cancel` | sesión + **ser dueño del ticket** (o `admin`) |
 | `GET` | `/api/sessions/current` | sesión |
 | `GET` | `/api/users` | sesión + rol `admin` |
 
@@ -446,6 +480,100 @@ Un evento nace en `draft`. Una vez en `cancelled` o `finished` no admite más ca
 | `404` | El evento no existe | `Evento no encontrado` |
 | `409` | Ya está en ese estado | `El evento ya se encuentra en estado "X"` |
 | `409` | Transición no permitida | `No se puede pasar de "X" a "Y"` |
+
+### Tickets
+
+Un **ticket** es la inscripción de un usuario a un evento.
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| `POST` | `/api/events/:eid/tickets` | Cualquier usuario autenticado |
+| `GET` | `/api/events/:eid/tickets` | Organizador dueño del evento o `admin` |
+| `GET` | `/api/tickets/my-tickets` | Cualquier usuario autenticado |
+| `PATCH` | `/api/tickets/:tid/cancel` | Dueño del ticket o `admin` |
+
+#### Reglas de cupo
+
+Los lugares ocupados de un evento se calculan como la **suma de `quantity` de todos sus tickets no cancelados**, mediante una agregación en MongoDB:
+
+```
+disponibles = event.capacity - SUMA(quantity de tickets con status != 'cancelled')
+```
+
+De ahí se desprenden tres consecuencias:
+
+- Cancelar un ticket **libera el cupo automáticamente**: no hay que devolver lugares en ningún lado, el ticket cancelado deja de contar en la suma.
+- Un ticket cancelado **no bloquea una inscripción nueva**: el control de duplicados busca solo tickets `active`.
+- Un usuario puede tener **una sola inscripción activa por evento**, con la cantidad de entradas que quiera dentro del cupo disponible.
+
+#### `POST /api/events/:eid/tickets`
+
+**Request**
+
+```json
+{ "quantity": 2 }
+```
+
+`quantity` es opcional: si no viene, se asume `1`.
+
+**Respuesta `201 Created`**
+
+```json
+{
+  "status": "success",
+  "payload": {
+    "code": "TKT-DFF85D0D",
+    "user": "6aae182519000cb6b1be10a9",
+    "event": "6aae18b519000cb6b1be10aa",
+    "quantity": 2,
+    "unitPrice": 1000,
+    "totalPrice": 2000,
+    "status": "active",
+    "cancelledAt": null
+  }
+}
+```
+
+> `unitPrice` y `totalPrice` quedan congelados al momento de la compra: si el organizador cambia el precio del evento después, los tickets ya emitidos conservan lo que se cobró.
+
+Al confirmar la inscripción se envía un correo con el código del ticket. El envío es *best effort*: si el servidor SMTP falla, se registra en consola pero la inscripción sigue siendo válida.
+
+**Errores**
+
+| Código | Situación | Mensaje |
+|---|---|---|
+| `400` | `quantity` inválida | `La cantidad debe ser un número entero mayor o igual a 1` |
+| `401` | Sin sesión | `No autenticado` |
+| `404` | El evento no existe | `Evento no encontrado` |
+| `409` | Evento no publicado | `Solo se puede reservar en eventos publicados` |
+| `409` | Evento ya ocurrido | `El evento ya ocurrió` |
+| `409` | Ya tiene inscripción activa | `Ya tenés una inscripción activa para este evento` |
+| `409` | Cupo insuficiente | `No hay cupo suficiente. Lugares disponibles: N` |
+
+#### `GET /api/tickets/my-tickets`
+
+Inscripciones del usuario autenticado, de la más reciente a la más antigua. El campo `event` viene resuelto con `populate` (`title`, `date`, `location`, `status`) en lugar de un id suelto.
+
+#### `GET /api/events/:eid/tickets`
+
+Listado de inscriptos de un evento, con el campo `user` resuelto (`first_name`, `last_name`, `email`).
+
+| Código | Situación | Mensaje |
+|---|---|---|
+| `401` | Sin sesión | `No autenticado` |
+| `403` | No organiza el evento | `No podés ver los inscriptos de un evento que no te pertenece` |
+| `404` | El evento no existe | `Evento no encontrado` |
+
+#### `PATCH /api/tickets/:tid/cancel`
+
+Cancelación lógica: el ticket no se elimina, pasa a `status: "cancelled"` y se registra `cancelledAt`. Así queda el historial y el cupo se libera solo.
+
+| Código | Situación | Mensaje |
+|---|---|---|
+| `401` | Sin sesión | `No autenticado` |
+| `403` | El ticket es de otro usuario | `No podés cancelar una inscripción que no te pertenece` |
+| `404` | El ticket no existe | `Ticket no encontrado` |
+| `409` | Ya estaba cancelado | `La inscripción ya estaba cancelada` |
 
 ### Usuarios
 
