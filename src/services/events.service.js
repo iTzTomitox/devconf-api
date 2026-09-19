@@ -14,7 +14,7 @@ const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 
 
-class EventsService {
+export class EventsService {
   constructor(repository) {
     this.repository = repository;
   }
@@ -260,5 +260,6 @@ class EventsService {
     }
   }
 }
+
 
 export const eventsService = new EventsService(eventsRepository);
