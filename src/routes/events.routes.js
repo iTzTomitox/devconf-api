@@ -8,6 +8,7 @@ import {
 } from '../controllers/events.controller.js';
 import { authenticate } from '../middlewares/auth.middleware.js';
 import { authorize } from '../middlewares/authorize.middleware.js';
+import { createTicket, getEventTickets } from '../controllers/tickets.controller.js';
 
 const router = Router();
 
@@ -26,5 +27,10 @@ router.patch(
   authorize('organizer', 'admin'),
   changeStatus
 );
+
+// Inscripciones a un evento. Viven bajo /api/events porque el
+// evento es el recurso padre.
+router.post('/:eid/tickets', authenticate('current'), createTicket);
+router.get('/:eid/tickets', authenticate('current'), getEventTickets);
 
 export default router;
