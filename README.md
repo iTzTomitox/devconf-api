@@ -522,7 +522,7 @@ De ahí se desprenden tres consecuencias:
 {
   "status": "success",
   "payload": {
-    "code": "TKT-DFF85D0D",
+    "reservationCode": "TKT-DFF85D0D",
     "user": "6aae182519000cb6b1be10a9",
     "event": "6aae18b519000cb6b1be10aa",
     "quantity": 2,

@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const ticketSchema = new mongoose.Schema(
   {
-    code: {
+    reservationCode: {
       type: String,
       required: true,
       unique: true,

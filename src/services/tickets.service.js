@@ -49,7 +49,7 @@ export class TicketsService {
     }
 
     const ticket = await this.repository.create({
-      code: this.#generateCode(),
+      reservationCode: this.#generateCode(),
       user: requester.id,
       event: eventId,
       quantity: requestedQuantity,

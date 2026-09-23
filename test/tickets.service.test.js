@@ -99,7 +99,7 @@ test('createTicket congela el precio y calcula el total', async () => {
 
   assert.equal(ticket.unitPrice, 1000);
   assert.equal(ticket.totalPrice, 3000);
-  assert.match(ticket.code, /^TKT-[0-9A-F]{8}$/);
+  assert.match(ticket.reservationCode, /^TKT-[0-9A-F]{8}$/);
   assert.equal(mailer.calls.length, 1);              // se envio el mail
   assert.equal(mailer.calls[0].to, 'ana@mail.com');  // al usuario correcto
 });
