@@ -3,12 +3,14 @@ import { ticketsRepository } from '../repositories/tickets.repository.js';
 import { eventsRepository } from '../repositories/events.repository.js';
 import { badRequest, notFound, forbidden, conflict } from '../utils/errors.js';
 import { mailService } from './mail.service.js';
+import { usersRepository } from '../repositories/users.repository.js';
 
 
 export class TicketsService {
-  constructor(repository, eventsRepository, mailer) {
+  constructor({ repository, eventsRepository, usersRepository, mailer }) {
     this.repository = repository;
     this.eventsRepository = eventsRepository;
+    this.usersRepository = usersRepository;
     this.mailer = mailer;
   }
 
@@ -109,11 +111,39 @@ export class TicketsService {
       throw conflict('La inscripción ya estaba cancelada');
     }
 
-    return this.repository.update(ticketId, {
+    const cancelled = await this.repository.update(ticketId, {
       status: 'cancelled',
       cancelledAt: new Date(),
     });
+
+    await this.#notifyCancellation(cancelled);
+
+    return cancelled;
   }
+
+  /**
+   * Avisa por mail que la inscripcion fue cancelada.
+   *
+   * El correo va al DUEÑO del ticket, no a quien ejecuto la
+   * cancelacion: si un admin cancela la inscripcion de otro, el que
+   * tiene que enterarse es el asistente.
+   */
+  async #notifyCancellation(ticket) {
+    const [event, owner] = await Promise.all([
+      this.eventsRepository.findById(ticket.event),
+      this.usersRepository.findById(ticket.user),
+    ]);
+
+    // Si falta alguno, no avisamos, pero la cancelacion ya es valida.
+    if (!event || !owner) return;
+
+    await this.mailer.sendTicketCancellation({
+      to: owner.email,
+      ticket,
+      event,
+    });
+  }
+  
 
   #validateQuantity(quantity) {
     // Si no viene, se asume 1 entrada.
@@ -137,8 +167,9 @@ export class TicketsService {
   }
 }
 
-export const ticketsService = new TicketsService(
-  ticketsRepository,
+export const ticketsService = new TicketsService({
+  repository: ticketsRepository,
   eventsRepository,
-  mailService
-);
+  usersRepository,
+  mailer: mailService,
+});
