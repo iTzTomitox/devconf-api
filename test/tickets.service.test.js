@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TicketsService } from '../src/services/tickets.service.js';
 
-// Repositories y mailer falsos: el service corre sin base ni SMTP.
 const createFakeTicketsRepo = (overrides = {}) => ({
   create: async (data) => ({ _id: 'tk-1', ...data }),
   findById: async () => null,
@@ -14,9 +13,22 @@ const createFakeTicketsRepo = (overrides = {}) => ({
   ...overrides,
 });
 
-const createFakeEventsRepo = (event) => ({
-  findById: async () => event,
-});
+const createFakeEventsRepo = (event, { canReserve = true } = {}) => {
+  const calls = { reserve: [], release: [] };
+  return {
+    calls,
+    findById: async () => event,
+    reserveSeats: async (id, quantity) => {
+      calls.reserve.push({ id, quantity });
+      if (!canReserve) return null;
+      return { ...event, seatsTaken: (event.seatsTaken ?? 0) + quantity };
+    },
+    releaseSeats: async (id, quantity) => {
+      calls.release.push({ id, quantity });
+      return event;
+    },
+  };
+};
 
 
 const createFakeMailer = () => {
@@ -51,10 +63,17 @@ const publishedEvent = {
 
 const attendee = { id: 'user-1', role: 'user', email: 'ana@mail.com' };
 
-const buildService = ({ repository, event, mailer } = {}) =>
+const buildService = ({
+  repository,
+  event,
+  mailer,
+  canReserve = true,
+  eventsRepository,
+} = {}) =>
   new TicketsService({
     repository: repository ?? createFakeTicketsRepo(),
-    eventsRepository: createFakeEventsRepo(event ?? publishedEvent),
+    eventsRepository:
+      eventsRepository ?? createFakeEventsRepo(event ?? publishedEvent, { canReserve }),
     usersRepository: { findById: async () => ticketOwner },
     mailer: mailer ?? createFakeMailer(),
   });
@@ -82,9 +101,11 @@ const service = buildService({ repository });
 });
 
 test('createTicket rechaza cuando no alcanza el cupo', async () => {
-  // Capacidad 10, ya hay 9 ocupados: solo queda 1.
-  const repository = createFakeTicketsRepo({ countOccupiedSeats: async () => 9 });
-const service = buildService({ repository });
+  // Capacidad 10, ya hay 9 tomados: la reserva atomica falla.
+  const service = buildService({
+    event: { ...publishedEvent, seatsTaken: 9 },
+    canReserve: false,
+  });
 
   await assert.rejects(
     () => service.createTicket('ev-1', { quantity: 2 }, attendee),
@@ -169,4 +190,49 @@ test('cancelTicket avisa por mail al dueño, no a quien cancela', async () => {
   
   assert.equal(mailer.cancellations.length, 1);
   assert.equal(mailer.cancellations[0].to, 'ana@mail.com'); // el dueño
+});
+
+test('createTicket reserva los lugares de forma atomica antes de crear el ticket', async () => {
+  const eventsRepository = createFakeEventsRepo(publishedEvent);
+  const service = buildService({ eventsRepository });
+
+  await service.createTicket('ev-1', { quantity: 3 }, attendee);
+
+  // La reserva se pide UNA vez, con la cantidad solicitada.
+  assert.equal(eventsRepository.calls.reserve.length, 1);
+  assert.deepEqual(eventsRepository.calls.reserve[0], { id: 'ev-1', quantity: 3 });
+});
+
+test('createTicket devuelve los lugares si falla la creacion del ticket', async () => {
+  const eventsRepository = createFakeEventsRepo(publishedEvent);
+  const repository = createFakeTicketsRepo({
+    create: async () => {
+      throw new Error('fallo de base');
+    },
+  });
+  const service = buildService({ repository, eventsRepository });
+
+  await assert.rejects(() => service.createTicket('ev-1', { quantity: 2 }, attendee));
+
+  // Compensacion: los lugares reservados vuelven al pozo.
+  assert.deepEqual(eventsRepository.calls.release[0], { id: 'ev-1', quantity: 2 });
+});
+
+test('cancelTicket libera los lugares del evento', async () => {
+  const eventsRepository = createFakeEventsRepo(publishedEvent);
+  const repository = createFakeTicketsRepo({
+    findById: async () => ({
+      _id: 'tk-1',
+      user: 'user-1',
+      event: 'ev-1',
+      quantity: 2,
+      status: 'active',
+      reservationCode: 'TKT-ABCD1234',
+    }),
+  });
+  const service = buildService({ repository, eventsRepository });
+
+  await service.cancelTicket('tk-1', attendee);
+
+  assert.deepEqual(eventsRepository.calls.release[0], { id: 'ev-1', quantity: 2 });
 });
