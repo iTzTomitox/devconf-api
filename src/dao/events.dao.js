@@ -36,6 +36,29 @@ class EventsDAO {
 
     return { documents, total };
   }
+
+    async reserveSeats(id, quantity) {
+    return Event.findOneAndUpdate(
+      {
+        _id: id,
+        status: 'published',
+        $expr: {
+          $lte: [{ $add: [{ $ifNull: ['$seatsTaken', 0] }, quantity] }, '$capacity'],
+        },
+      },
+      { $inc: { seatsTaken: quantity } },
+      { returnDocument: 'after' }
+    ).lean();
+  }
+
+  /** Libera lugares al cancelar una inscripcion. */
+  async releaseSeats(id, quantity) {
+    return Event.findOneAndUpdate(
+      { _id: id },
+      { $inc: { seatsTaken: -quantity } },
+      { returnDocument: 'after' }
+    ).lean();
+  }
 }
 
 export const eventsDAO = new EventsDAO();

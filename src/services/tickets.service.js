@@ -41,26 +41,34 @@ export class TicketsService {
       throw conflict('Ya tenés una inscripción activa para este evento');
     }
 
-    const occupiedSeats = await this.repository.countOccupiedSeats(eventId);
-    const availableSeats = event.capacity - occupiedSeats;
+    const reserved = await this.eventsRepository.reserveSeats(
+      eventId,
+      requestedQuantity
+    );
 
-    if (requestedQuantity > availableSeats) {
+    if (!reserved) {
+      const availableSeats = Math.max(event.capacity - (event.seatsTaken ?? 0), 0);
       throw conflict(
         `No hay cupo suficiente. Lugares disponibles: ${availableSeats}`
       );
     }
 
-    const ticket = await this.repository.create({
-      reservationCode: this.#generateCode(),
-      user: requester.id,
-      event: eventId,
-      quantity: requestedQuantity,
-      unitPrice: event.price,
-      totalPrice: event.price * requestedQuantity,
-    });
+    let ticket;
 
-    // El mail se envia despues de confirmar la inscripcion, y su
-    // resultado no afecta la respuesta: el ticket ya esta creado.
+    try {
+      ticket = await this.repository.create({
+        reservationCode: this.#generateCode(),
+        user: requester.id,
+        event: eventId,
+        quantity: requestedQuantity,
+        unitPrice: event.price,
+        totalPrice: event.price * requestedQuantity,
+      });
+    } catch (error) {
+      await this.eventsRepository.releaseSeats(eventId, requestedQuantity);
+      throw error;
+    }
+
     await this.mailer.sendTicketConfirmation({
       to: requester.email,
       ticket,
@@ -70,7 +78,7 @@ export class TicketsService {
     return ticket;
   }
 
-    /** Inscripciones del usuario autenticado, con datos del evento. */
+
   async getMyTickets(requester) {
     return this.repository.findByUser(requester.id);
   }
@@ -116,6 +124,8 @@ export class TicketsService {
       cancelledAt: new Date(),
     });
 
+    await this.eventsRepository.releaseSeats(ticket.event, ticket.quantity);
+
     await this.#notifyCancellation(cancelled);
 
     return cancelled;
@@ -143,7 +153,7 @@ export class TicketsService {
       event,
     });
   }
-  
+
 
   #validateQuantity(quantity) {
     // Si no viene, se asume 1 entrada.

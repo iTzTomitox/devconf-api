@@ -32,6 +32,14 @@ class EventsRepository {
     async paginate(filter, options) {
     return this.dao.paginate(filter, options);
   }
+
+    async reserveSeats(eventId, quantity) {
+    return this.dao.reserveSeats(eventId, quantity);
+  }
+
+  async releaseSeats(eventId, quantity) {
+    return this.dao.releaseSeats(eventId, quantity);
+  }
 }
 
 export const eventsRepository = new EventsRepository(eventsDAO);
