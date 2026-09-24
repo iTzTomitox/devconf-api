@@ -120,6 +120,9 @@ Los tests cubren las reglas de negocio de los services sin tocar la base de dato
 | `createTicket` | Evento no publicado, inscripción duplicada, cupo insuficiente, precio congelado y envío de mail |
 | `cancelTicket` | Cambio de estado con fecha, propiedad del ticket, doble cancelación |
 | `getEventTickets` | Solo el organizador dueño o un `admin` |
+| Reserva atómica | La reserva se pide una vez con la cantidad correcta; los lugares se devuelven si falla la creación |
+| Liberación de cupo | Cancelar decrementa el contador del evento |
+| Mail de cancelación | El aviso va al dueño del ticket, no a quien ejecuta la cancelación |
 
 ## Estructura de carpetas
 
@@ -494,15 +497,28 @@ Un **ticket** es la inscripción de un usuario a un evento.
 
 #### Reglas de cupo
 
-Los lugares ocupados de un evento se calculan como la **suma de `quantity` de todos sus tickets no cancelados**, mediante una agregación en MongoDB:
+Cada evento lleva un contador `seatsTaken` que es la **fuente de verdad** del cupo:
 
 ```
-disponibles = event.capacity - SUMA(quantity de tickets con status != 'cancelled')
+disponibles = event.capacity - event.seatsTaken
 ```
 
-De ahí se desprenden tres consecuencias:
+La reserva **no** lee el contador para después decidir: le pide a MongoDB que incremente y verifique en una sola operación.
 
-- Cancelar un ticket **libera el cupo automáticamente**: no hay que devolver lugares en ningún lado, el ticket cancelado deja de contar en la suma.
+```js
+Event.findOneAndUpdate(
+  { _id, status: 'published', $expr: { $lte: [{ $add: ['$seatsTaken', quantity] }, '$capacity'] } },
+  { $inc: { seatsTaken: quantity } }
+)
+```
+
+**Por qué importa:** MongoDB garantiza que una escritura sobre un solo documento es atómica. Si la condición y el incremento viajaran por separado, dos inscripciones simultáneas podrían leer el mismo valor, decidir que hay lugar, y crear ambas su ticket — una *race condition* que produce sobreventa. Al ir juntas, el segundo request ve el contador ya actualizado por el primero y su condición falla.
+
+Si `findOneAndUpdate` devuelve `null`, no había cupo. Y si la creación del ticket fallara después de haber reservado, el service **compensa** liberando los lugares: sin transacciones, deshacer el primer paso es responsabilidad del código.
+
+Consecuencias de este diseño:
+
+- Cancelar un ticket **libera el cupo** decrementando el contador, y dispara un mail al dueño de la inscripción.
 - Un ticket cancelado **no bloquea una inscripción nueva**: el control de duplicados busca solo tickets `active`.
 - Un usuario puede tener **una sola inscripción activa por evento**, con la cantidad de entradas que quiera dentro del cupo disponible.
 
@@ -536,7 +552,7 @@ De ahí se desprenden tres consecuencias:
 
 > `unitPrice` y `totalPrice` quedan congelados al momento de la compra: si el organizador cambia el precio del evento después, los tickets ya emitidos conservan lo que se cobró.
 
-Al confirmar la inscripción se envía un correo con el código del ticket. El envío es *best effort*: si el servidor SMTP falla, se registra en consola pero la inscripción sigue siendo válida.
+Al confirmar la inscripción se envía un correo con el código del ticket, y al cancelarla otro avisando que el código dejó de ser válido. El envío es *best effort*: si el servidor SMTP falla, se registra en consola pero la operación sigue siendo válida.
 
 **Errores**
 
