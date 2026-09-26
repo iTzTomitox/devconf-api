@@ -1,6 +1,7 @@
 import { usersRepository } from '../repositories/users.repository.js';
 import { createHash, isValidPassword } from '../utils/hash.js';
 import { badRequest, conflict, unauthorized } from '../utils/errors.js';
+import { toUserDTO } from '../dto/user.dto.js';
 
 const PASSWORD_MIN_LENGTH = 8;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -42,7 +43,7 @@ class SessionsService {
       password: hashedPassword,
     });
 
-    return this.#toPublicUser(createdUser);
+    return toUserDTO(createdUser);
   }
 
   async validateCredentials({ email, password }) {
@@ -63,12 +64,12 @@ class SessionsService {
       throw unauthorized('Credenciales inválidas');
     }
 
-    return this.#toPublicUser(user);
+    return toUserDTO(user);
   }
-
+  
     async getAllUsers() {
     const users = await this.repository.findAll();
-    return users.map((user) => this.#toPublicUser(user));
+    return users.map((user) => toUserDTO(user));
   }
 
   #validateRegisterData({ first_name, last_name, email, password }) {
@@ -85,15 +86,6 @@ class SessionsService {
         `La contraseña debe tener al menos ${PASSWORD_MIN_LENGTH} caracteres`
       );
     }
-  }
-  #toPublicUser(user) {
-    return {
-      id: user._id,
-      first_name: user.first_name,
-      last_name: user.last_name,
-      email: user.email,
-      role: user.role,
-    };
   }
 }
 

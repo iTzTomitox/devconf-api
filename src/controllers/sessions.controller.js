@@ -1,5 +1,6 @@
 import { config } from '../config/config.js';
 import { generateToken } from '../utils/jwt.js';
+import { toUserDTO } from '../dto/user.dto.js';
 
 
 const COOKIE_NAME = 'currentUser';
@@ -14,7 +15,7 @@ const COOKIE_OPTIONS = {
 export const register = (req, res) => {
   res.status(201).json({
     status: 'success',
-    payload: req.user,
+    payload: toUserDTO(req.user),
   });
 };
 
@@ -38,7 +39,7 @@ export const current = (req, res) => {
   // la sesion ya fue validada.
   res.status(200).json({
     status: 'success',
-    payload: req.user,
+    payload: toUserDTO(req.user),
   });
 };
 
