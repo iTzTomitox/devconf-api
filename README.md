@@ -4,7 +4,7 @@ API REST para una plataforma de **conferencias tech e inscripciones**, desarroll
 
 La plataforma permite publicar conferencias, charlas y meetups, y gestionar las inscripciones de los asistentes con control de cupos, roles y notificaciones.
 
-> **Estado actual: Pre-entrega 7** — inscripciones (`Ticket`) con control de cupos, cancelación que libera lugares y confirmación por email.
+> **Estado actual: Pre-entrega 8** — arquitectura profesional por capas con DAO, Repository y DTO. Ninguna respuesta expone datos internos ni contraseñas.
 
 ---
 
@@ -123,6 +123,7 @@ Los tests cubren las reglas de negocio de los services sin tocar la base de dato
 | Reserva atómica | La reserva se pide una vez con la cantidad correcta; los lugares se devuelven si falla la creación |
 | Liberación de cupo | Cancelar decrementa el contador del evento |
 | Mail de cancelación | El aviso va al dueño del ticket, no a quien ejecuta la cancelación |
+| DTOs | `password` y `__v` nunca salen, `_id` se normaliza a `id`, el ref populado también se filtra |
 
 ## Estructura de carpetas
 
@@ -162,6 +163,10 @@ devconf-api/
 │   │   ├── events.dao.js
 │   │   ├── tickets.dao.js
 │   │   └── users.dao.js
+│   ├── dto/                   # Forma publica de las respuestas
+│   │   ├── user.dto.js
+│   │   ├── event.dto.js
+│   │   └── ticket.dto.js
 │   ├── models/                # Schemas de Mongoose
 │   │   ├── user.model.js
 │   │   ├── event.model.js
@@ -175,6 +180,7 @@ devconf-api/
 │       ├── hash.js            # bcrypt: crear y comparar hashes
 │       └── jwt.js             # Firma y verificación de JWT
 ├── test/                      # Tests de reglas de negocio (node:test)
+│   ├── dto.test.js
 │   ├── events.service.test.js
 │   └── tickets.service.test.js
 ├── .env.example
@@ -190,16 +196,81 @@ Cada petición atraviesa una cadena donde cada capa tiene una única responsabil
 
 ```
 routes → controllers → services → repositories → dao → models
+                 ↓
+                dto  (da forma a la respuesta)
 ```
 
-- **routes** — asocian una URL con un controller
-- **controllers** — leen la request, llaman al service y devuelven la response
-- **services** — concentran la lógica de negocio
-- **repositories** — exponen métodos orientados al dominio y consumen los DAO
-- **dao** — únicos archivos que acceden a Mongoose
-- **models** — definen la estructura de los documentos
+| Capa | Responsabilidad | Qué NO hace |
+|---|---|---|
+| **routes** | Asocian una URL con un controller y encadenan los middlewares | No contienen lógica |
+| **controllers** | Extraen datos de `body`/`params`/`query`, llaman al service y arman la respuesta | No calculan cupos, no validan reglas, no importan modelos |
+| **services** | Concentran la lógica de negocio: validaciones, permisos sobre recursos propios, estados, cupos, envío de correo | No importan modelos ni DAOs |
+| **repositories** | Exponen métodos orientados al dominio (`findByEmail`, `countOccupiedSeats`, `reserveSeats`) | No importan modelos |
+| **dao** | Únicos archivos que acceden a Mongoose | No deciden nada de negocio |
+| **dto** | Definen la forma pública de cada entidad | No consultan la base |
+| **models** | Definen la estructura de los documentos | — |
 
-Regla principal: cada capa solo conoce a la que tiene inmediatamente debajo. Un controller nunca importa un modelo de Mongoose.
+**Regla principal:** cada capa solo conoce a la que tiene inmediatamente debajo. Un controller nunca importa un modelo de Mongoose.
+
+#### Inyección de dependencias
+
+Services y repositories reciben sus colaboradores por el constructor en vez de importarlos adentro:
+
+```js
+export const ticketsService = new TicketsService({
+  repository: ticketsRepository,
+  eventsRepository,
+  usersRepository,
+  mailer: mailService,
+});
+```
+
+Esto es lo que hace testeable el proyecto: en los tests se les pasan dobles falsos y los services corren sin base de datos ni servidor SMTP. El `TicketsService` recibe un objeto con nombres en lugar de argumentos posicionales porque tiene cuatro dependencias y el orden sería fácil de equivocar.
+
+#### DTOs
+
+Un DTO define **qué sale** de la API, con independencia de cómo están guardados los datos. Funcionan como lista blanca, no como lista negra: `password` no se elimina de la respuesta, simplemente nunca se copia a ella.
+
+| DTO | Qué expone |
+|---|---|
+| `toUserDTO` | `id`, `first_name`, `last_name`, `email`, `role` |
+| `toEventDTO` | Datos del evento + `seatsTaken` y `availableSeats` calculado |
+| `toTicketDTO` | Datos del ticket; resuelve los refs populados delegando en los DTO de `user` y `event` |
+
+Los tres normalizan `_id` a `id` y descartan `__v`. Cuando un ref viene con `populate`, el documento relacionado **también** pasa por su DTO: el DAO ya limita los campos en la consulta, y el DTO garantiza el filtrado aunque esa consulta cambie. Dos barreras independientes para el mismo riesgo.
+
+#### Manejo de errores
+
+Los services lanzan errores construidos con las factories de `utils/errors.js`, que llevan su código HTTP asociado. Un único middleware (`error.middleware.js`) los convierte en respuesta:
+
+| Código | Cuándo |
+|---|---|
+| `400` | Datos inválidos |
+| `401` | Sin sesión o token inválido |
+| `403` | Sesión válida sin permisos, o recurso ajeno |
+| `404` | El recurso no existe |
+| `409` | Conflicto con el estado actual (duplicado, sin cupo, transición no permitida) |
+| `500` | Error no previsto — en producción el mensaje se reemplaza por uno genérico |
+
+Todas las respuestas de error comparten el mismo formato:
+
+```json
+{ "status": "error", "message": "Descripción del problema" }
+```
+
+### Usuarios de prueba
+
+El registro público siempre crea usuarios con rol `user`: el campo `role` se descarta del body para evitar escalamiento de privilegios. Para probar los tres roles:
+
+1. Registrá tres usuarios con `POST /api/sessions/register`.
+2. En MongoDB (Atlas o Compass), abrí la colección `users` y cambiá el campo `role` de dos de ellos a `organizer` y `admin`.
+3. **Volvé a hacer login** con los usuarios modificados: el rol viaja dentro del JWT, así que un token emitido antes del cambio sigue teniendo el rol viejo.
+
+| Rol | Puede |
+|---|---|
+| `user` | Ver eventos, inscribirse, ver y cancelar sus propias inscripciones |
+| `organizer` | Todo lo anterior + crear eventos, modificar los propios y ver sus inscriptos |
+| `admin` | Todo, sobre cualquier recurso |
 
 ### Estrategias de autenticación
 
