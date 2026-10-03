@@ -4,7 +4,7 @@ API REST para una plataforma de **conferencias tech e inscripciones**, desarroll
 
 La plataforma permite publicar conferencias, charlas y meetups, y gestionar las inscripciones de los asistentes con control de cupos, roles y notificaciones.
 
-> **Estado actual: Pre-entrega 8** — arquitectura profesional por capas con DAO, Repository y DTO. Ninguna respuesta expone datos internos ni contraseñas.
+> **Entrega final** — API completa: autenticación con JWT en cookie `httpOnly`, roles y autorización, CRUD de eventos con filtros y paginación, inscripciones con control atómico de cupos, notificaciones por email y arquitectura por capas con DAO, Repository y DTO.
 
 ---
 
@@ -125,6 +125,41 @@ Los tests cubren las reglas de negocio de los services sin tocar la base de dato
 | Mail de cancelación | El aviso va al dueño del ticket, no a quien ejecuta la cancelación |
 | DTOs | `password` y `__v` nunca salen, `_id` se normaliza a `id`, el ref populado también se filtra |
 
+## Colección de Postman
+
+En `postman/devconf-api.postman_collection.json` hay una colección importable que recorre el flujo completo: **11 carpetas, 37 peticiones**, cada una con tests automáticos que verifican el código HTTP y la forma de la respuesta.
+
+**Cómo usarla**
+
+1. Levantá la API con `npm run dev`.
+2. En Postman: **Import** → seleccioná el archivo.
+3. Corré la carpeta **0 · Setup** una sola vez (crea los cuatro usuarios).
+4. En MongoDB, promové los roles de `org@test.com`, `org2@test.com` y `admin@test.com` (ver [Usuarios de prueba](#usuarios-de-prueba)).
+5. Corré la colección completa con el **Collection Runner**, en orden.
+
+Las cookies se manejan solas: Postman guarda la cookie `currentUser` por dominio, así que cada login reemplaza la sesión anterior. Los `eventId` y `ticketId` se guardan automáticamente en variables de colección desde los tests de cada petición.
+
+> **Sobre los correos:** la corrida dispara tres envíos en pocos segundos (confirmación, cancelación, confirmación). El plan gratuito de Mailtrap limita la cantidad de correos por segundo, así que es normal que alguno sea rechazado con `550 Too many emails per second` y quede registrado en la consola del servidor.
+>
+> Eso **no hace fallar ningún test**, y es intencional: el envío es *best effort*. Una inscripción o una cancelación válidas no pueden quedar invalidadas porque el servidor de correo tuvo un problema. Para verlos los tres, corré las carpetas 3 y 6 por separado, con unos segundos de diferencia.
+
+**Qué cubre cada carpeta**
+
+| Carpeta | Verifica |
+|---|---|
+| 1 | Registro → login → `/current` → logout → `/current` da `401` |
+| 2 | Un `user` no puede crear eventos (`403`) |
+| 3 | Organizador crea y publica → asistente se inscribe → llega el mail → el cupo se descuenta |
+| 4 | Inscripción duplicada rechazada (`409`) |
+| 5 | Sin cupo suficiente, con el número de lugares en el mensaje (`409`) |
+| 6 | Cancelar libera el cupo y permite inscribirse de nuevo |
+| 7 | Un organizador no modifica el evento de otro (`403`) |
+| 8 | Un `admin` sí puede |
+| 9 | Ninguna respuesta expone `password`, ni siquiera el usuario populado |
+| 10 | Listado con filtros, paginación, ordenamiento y sus errores |
+
+---
+
 ## Estructura de carpetas
 
 ```
@@ -183,6 +218,8 @@ devconf-api/
 │   ├── dto.test.js
 │   ├── events.service.test.js
 │   └── tickets.service.test.js
+├── postman/                   # Coleccion importable del flujo completo
+│   └── devconf-api.postman_collection.json
 ├── .env.example
 ├── .gitattributes
 ├── .gitignore
@@ -239,24 +276,9 @@ Un DTO define **qué sale** de la API, con independencia de cómo están guardad
 
 Los tres normalizan `_id` a `id` y descartan `__v`. Cuando un ref viene con `populate`, el documento relacionado **también** pasa por su DTO: el DAO ya limita los campos en la consulta, y el DTO garantiza el filtrado aunque esa consulta cambie. Dos barreras independientes para el mismo riesgo.
 
-#### Manejo de errores
+#### Errores
 
-Los services lanzan errores construidos con las factories de `utils/errors.js`, que llevan su código HTTP asociado. Un único middleware (`error.middleware.js`) los convierte en respuesta:
-
-| Código | Cuándo |
-|---|---|
-| `400` | Datos inválidos |
-| `401` | Sin sesión o token inválido |
-| `403` | Sesión válida sin permisos, o recurso ajeno |
-| `404` | El recurso no existe |
-| `409` | Conflicto con el estado actual (duplicado, sin cupo, transición no permitida) |
-| `500` | Error no previsto — en producción el mensaje se reemplaza por uno genérico |
-
-Todas las respuestas de error comparten el mismo formato:
-
-```json
-{ "status": "error", "message": "Descripción del problema" }
-```
+Los services no arman respuestas HTTP: lanzan errores construidos con las factories de `utils/errors.js`, que llevan el código asociado. Un único middleware los traduce a respuesta. El detalle está en [Manejo de errores](#manejo-de-errores).
 
 ### Usuarios de prueba
 
@@ -840,9 +862,49 @@ POST /logout    ->  borra la cookie -> /current vuelve a dar 401
 | Payload mínimo en el JWT | El contenido de un JWT es legible por cualquiera: solo va lo imprescindible |
 | Expiración de 1 hora | Como el servidor no guarda estado, no puede revocar tokens: la expiración limita el daño si uno se filtra |
 
+### Flujo de inscripción
+
+```
+GET /api/events?status=published    ->  el usuario encuentra un evento con cupo
+       |
+POST /api/events/:eid/tickets       ->  el service valida, en este orden:
+       |                                  1. el evento existe            -> 404
+       |                                  2. esta publicado              -> 409
+       |                                  3. la fecha no paso            -> 409
+       |                                  4. quantity es valida          -> 400
+       |                                  5. no hay inscripcion activa   -> 409
+       |                                  6. reserva atomica del cupo    -> 409
+       |                                -> crea el ticket y manda el mail
+       |
+GET /api/tickets/my-tickets         ->  lista sus inscripciones con el evento populado
+       |
+PATCH /api/tickets/:tid/cancel      ->  cambia status a cancelled + cancelledAt
+                                        libera el cupo y avisa por mail al dueño
+```
+
+**Por qué ese orden de validaciones**
+
+Van de lo más barato y decisivo a lo más costoso. Si el evento no existe, no tiene sentido consultar cupos. Y el control de duplicados va **antes** que el de cupo para que el mensaje sea el útil: "ya estás inscripto" le sirve más al usuario que "no hay lugar".
+
+**El cupo se reserva, no se cuenta**
+
+El paso 6 no lee el contador para después decidir: le pide a MongoDB que incremente `seatsTaken` **solo si** el resultado no supera `capacity`, en una única operación atómica. Dos personas comprando la última entrada al mismo tiempo no pueden pasar las dos. El detalle está en [Reglas de cupo](#reglas-de-cupo).
+
+Si la creación del ticket fallara después de haber reservado, el service **compensa** liberando los lugares: sin transacciones, deshacer el primer paso es responsabilidad del código.
+
+**El correo no bloquea la operación**
+
+El envío es *best effort*: si el servidor SMTP está caído, se registra en consola pero la inscripción (o la cancelación) sigue siendo válida. Una operación de negocio correcta no puede fallar porque el mail no salió.
+
 ### Manejo de errores
 
-Un middleware centralizado unifica el formato de todas las respuestas de error.
+Un único middleware (`error.middleware.js`) centraliza el formato de todas las respuestas de error. Los services lanzan errores construidos con las factories de `utils/errors.js`, que ya llevan su código HTTP; el middleware solo los traduce.
+
+**Formato de toda respuesta de error**
+
+```json
+{ "status": "error", "message": "Descripción del problema" }
+```
 
 **Ruta inexistente — `404`**
 
@@ -852,16 +914,18 @@ Un middleware centralizado unifica el formato de todas las respuestas de error.
 
 **Códigos utilizados**
 
-| Código | Significado |
-|---|---|
-| `200` | Petición exitosa |  
-| `201` | Recurso creado |
-| `400` | Datos inválidos o incompletos |
-| `403` | Autenticado, pero sin permisos para esta acción |
-| `404` | Recurso o ruta inexistente |
-| `409` | Conflicto con el estado actual (ej. email duplicado) |
-| `500` | Error interno del servidor |
-| `501` | Funcionalidad aún no implementada |
+| Código | Significado | Ejemplo |
+|---|---|---|
+| `200` | Petición exitosa | Listado de eventos |
+| `201` | Recurso creado | Registro, evento, inscripción |
+| `400` | Datos inválidos o incompletos | Fecha pasada, `quantity` menor a 1 |
+| `401` | Sin sesión o token inválido | Petición protegida sin cookie |
+| `403` | Autenticado, pero sin permisos | Rol insuficiente, o recurso de otro usuario |
+| `404` | Recurso o ruta inexistente | Evento o ticket que no existe |
+| `409` | Conflicto con el estado actual | Email duplicado, sin cupo, transición no permitida |
+| `500` | Error interno no previsto | En producción el mensaje se reemplaza por uno genérico |
+
+> La distinción entre `401` y `403` es deliberada: `401` significa "no sé quién sos", `403` significa "sé quién sos y no podés".
 
 ---
 
